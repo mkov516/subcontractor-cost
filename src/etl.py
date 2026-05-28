@@ -20,9 +20,11 @@ logging.basicConfig(
     stream=sys.stdout,
 )
  
+ 
 def env_or_default(key: str, default: str) -> str:
     v = os.getenv(key)
     return v.strip() if v and v.strip() else default
+ 
  
 # ---------------------- Config ----------------------
 SAP_BASE_URL    = env_or_default("SAP_BASE_URL", "https://my438923.businessbydesign.cloud.sap").rstrip("/")
@@ -36,6 +38,14 @@ CODES_FILTER_FIELD = env_or_default("CODES_FILTER_FIELD", "CPROJECT")
 SAP_MAIN_QUERY  = env_or_default("SAP_MAIN_QUERY",  "RPFINCACU02_Q0001QueryResults").strip("/")
 MAIN_FILTER_FIELD = env_or_default("MAIN_FILTER_FIELD", "PARA_PROJECT")
 MAIN_SETOFBKS = env_or_default("MAIN_SETOFBKS", "6000")
+ 
+# --- Accounting Period/Year override (YYYYPPP, e.g. 2026005 = period 5 of 2026) ---
+# This widens the report's default selection (which otherwise defaults to the
+# current period and scopes everything to "this month"). Adjust as needed.
+ACCYEARPER_FROM = env_or_default("ACCYEARPER_FROM", "2020001")
+ACCYEARPER_TO   = env_or_default("ACCYEARPER_TO",   "2026012")
+# Set to "0"/"false" to drop the period range (e.g. if you switch to PARA_POSTDATE instead).
+USE_ACCYEARPER_RANGE = env_or_default("USE_ACCYEARPER_RANGE", "1").lower() not in ("0", "false", "no", "")
  
 OUTPUT_CSV      = env_or_default("OUTPUT_CSV", "data/subcontractor-cost.csv")
  
@@ -58,20 +68,25 @@ MAIN_SELECT_FIELDS = [
     "CACCPSTDAT",
 ]
  
+ 
 # ---------------------- URL helpers ----------------------
 def _auth() -> Optional[HTTPBasicAuth]:
     if SAP_USERNAME and SAP_PASSWORD:
         return HTTPBasicAuth(SAP_USERNAME, SAP_PASSWORD)
     return None
  
+ 
 def _root_url() -> str:
     return f"{SAP_BASE_URL.rstrip('/')}/{SAP_ODATA_PATH.strip('/')}".rstrip("/")
+ 
  
 def _entity_url(entity: str) -> str:
     return f"{_root_url()}/{entity.strip('/')}".rstrip("/")
  
+ 
 def _get_raw(url: str, params: Dict[str, str]) -> requests.Response:
     return SESSION.get(url, params=params, auth=_auth(), timeout=90)
+ 
  
 def _get_json_or_raise(url: str, params: Dict[str, str]) -> Dict:
     resp = _get_raw(url, params)
@@ -81,11 +96,13 @@ def _get_json_or_raise(url: str, params: Dict[str, str]) -> Dict:
         resp.raise_for_status()
     return resp.json()
  
+ 
 def _extract_results_and_next(data: Dict) -> Tuple[List[Dict], Optional[str]]:
     if "d" in data:
         d = data["d"]
         return d.get("results", []), d.get("__next")
     return data.get("value", []), data.get("@odata.nextLink") or data.get("odata.nextLink")
+ 
  
 # ---------------------- Core ETL ----------------------
 def fetch_distinct_projects() -> List[str]:
@@ -96,27 +113,50 @@ def fetch_distinct_projects() -> List[str]:
     params = {"$select": CODES_FILTER_FIELD, "$top": "1000000", "$format": "json"}
     data = _get_json_or_raise(url, params)
     results, _ = _extract_results_and_next(data)
- 
     vals = [r.get(CODES_FILTER_FIELD) for r in results if r.get(CODES_FILTER_FIELD)]
     distinct = sorted(set(vals))
     logging.info("Fetched %d distinct %s values", len(distinct), CODES_FILTER_FIELD)
     return distinct
  
-def fetch_rows_for_project(project_value: str, top_per_page: int = 1000000) -> List[Dict]:
-    """
-    Pull rows from the main query, filtered by PARA_SETOFBKS and PARA_PROJECT.
-    """
-    base_url = _entity_url(SAP_MAIN_QUERY)
  
+def _build_filter(project_value: str) -> str:
+    """
+    Build the $filter clause. Always constrains Set of Books and Project.
+    Optionally widens the Accounting Period/Year so the report's default
+    'current period' selection doesn't scope results to this month.
+    """
     filter_value = project_value.replace("'", "''")
     setofbks_value = MAIN_SETOFBKS.replace("'", "''")
  
+    clauses = [
+        f"PARA_SETOFBKS eq '{setofbks_value}'",
+        f"{MAIN_FILTER_FIELD} eq '{filter_value}'",
+    ]
+ 
+    if USE_ACCYEARPER_RANGE:
+        clauses.append(f"PARA_ACCYEARPER ge {int(ACCYEARPER_FROM)}")
+        clauses.append(f"PARA_ACCYEARPER le {int(ACCYEARPER_TO)}")
+ 
+    # If PARA_ACCYEARPER turns out NOT to be the field holding the default,
+    # comment out the block above and use a posting-date range instead, e.g.:
+    #   clauses.append("PARA_POSTDATE ge datetime'2020-01-01T00:00:00'")
+    #   clauses.append("PARA_POSTDATE le datetime'2026-12-31T00:00:00'")
+ 
+    return " and ".join(clauses)
+ 
+ 
+def fetch_rows_for_project(project_value: str, top_per_page: int = 1000000) -> List[Dict]:
+    """
+    Pull rows from the main query, filtered by PARA_SETOFBKS, PARA_PROJECT,
+    and (optionally) a wide PARA_ACCYEARPER range.
+    """
+    base_url = _entity_url(SAP_MAIN_QUERY)
     select = ",".join(MAIN_SELECT_FIELDS)
     params = {
         "$select": select,
         "$top": str(top_per_page),
         "$format": "json",
-        "$filter": f"PARA_SETOFBKS eq '{setofbks_value}' and {MAIN_FILTER_FIELD} eq '{filter_value}'",
+        "$filter": _build_filter(project_value),
     }
  
     resp = _get_raw(base_url, params)
@@ -137,15 +177,16 @@ def fetch_rows_for_project(project_value: str, top_per_page: int = 1000000) -> L
     logging.info("  %s=%s -> %d rows", MAIN_FILTER_FIELD, project_value, len(all_rows))
     return all_rows
  
+ 
 def _stringify_unhashables(x: Any) -> Any:
     if isinstance(x, (dict, list, set)):
         return str(x)
     return x
  
+ 
 def run_etl() -> pd.DataFrame:
     projects = fetch_distinct_projects()
     all_records: List[Dict] = []
- 
     for i, p in enumerate(projects, start=1):
         logging.info("(%d/%d) Fetching project: %s", i, len(projects), p)
         try:
@@ -159,28 +200,30 @@ def run_etl() -> pd.DataFrame:
         return pd.DataFrame()
  
     df = pd.DataFrame.from_records(all_records)
- 
     # Put selected columns first if present, in the requested order
     first = [c for c in MAIN_SELECT_FIELDS if c in df.columns]
     rest = [c for c in df.columns if c not in first]
     df = df[first + rest]
- 
     df = df.map(_stringify_unhashables).drop_duplicates()
     return df
+ 
  
 def main():
     logging.info("Starting SAP OData ETL...")
     logging.info("Root URL: %s", _root_url())
     logging.info("Codes entity: %s (field=%s)", SAP_CODES_QUERY, CODES_FILTER_FIELD)
     logging.info("Main entity:  %s (filter=%s, set of books=%s)", SAP_MAIN_QUERY, MAIN_FILTER_FIELD, MAIN_SETOFBKS)
+    if USE_ACCYEARPER_RANGE:
+        logging.info("Accounting Period/Year range: %s..%s", ACCYEARPER_FROM, ACCYEARPER_TO)
+    else:
+        logging.info("Accounting Period/Year range: disabled")
     logging.info("Output CSV: %s", OUTPUT_CSV)
- 
     df = run_etl()
- 
     out_path = OUTPUT_CSV
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_csv(out_path, index=False, encoding="utf-8")
     logging.info("Wrote %d rows to %s", len(df), out_path)
+ 
  
 if __name__ == "__main__":
     main()
