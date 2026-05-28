@@ -213,17 +213,21 @@ def main():
     logging.info("Root URL: %s", _root_url())
     logging.info("Codes entity: %s (field=%s)", SAP_CODES_QUERY, CODES_FILTER_FIELD)
     logging.info("Main entity:  %s (filter=%s, set of books=%s)", SAP_MAIN_QUERY, MAIN_FILTER_FIELD, MAIN_SETOFBKS)
+
     if USE_ACCYEARPER_RANGE:
         logging.info("Accounting Period/Year range: %s..%s", ACCYEARPER_FROM, ACCYEARPER_TO)
     else:
         logging.info("Accounting Period/Year range: disabled")
+
     logging.info("Output CSV: %s", OUTPUT_CSV)
+
     df = run_etl()
+
+    if df.empty:
+        logging.error("ETL returned 0 rows. Not overwriting existing CSV.")
+        sys.exit(1)
+
     out_path = OUTPUT_CSV
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_csv(out_path, index=False, encoding="utf-8")
     logging.info("Wrote %d rows to %s", len(df), out_path)
- 
- 
-if __name__ == "__main__":
-    main()
