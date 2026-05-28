@@ -49,12 +49,13 @@ SESSION.headers.update({"Accept": "application/json"})
  
 # Fields to pull from the main query. Not renamed in the CSV.
 MAIN_SELECT_FIELDS = [
-    "C1ACCDOITUIDsCREDITOR_BP",
+    "T1ACCDOITUIDsCREDITOR_BP",
     "CGLACCT",
     "TGLACCT",
     "CPROJECT",
     "TPROJECT",
     "KCAMTCOMP",
+    "CACCPSTDAT",
 ]
  
 # ---------------------- URL helpers ----------------------
