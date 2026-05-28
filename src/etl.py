@@ -38,7 +38,6 @@ SAP_ODATA_PATH = env_or_default(
     "/sap/byd/odata/ana_businessanalytics_analytics.svc"
 ).strip("/")
 
-# Codes query: returns the distinct project IDs to loop over
 SAP_CODES_QUERY = env_or_default(
     "SAP_CODES_QUERY",
     "RPZF595F0F3D4FC6D5380A2C7QueryResults"
@@ -46,7 +45,6 @@ SAP_CODES_QUERY = env_or_default(
 
 CODES_FILTER_FIELD = env_or_default("CODES_FILTER_FIELD", "CPROJECT")
 
-# Main query: uses each project ID in its mandatory filter
 SAP_MAIN_QUERY = env_or_default(
     "SAP_MAIN_QUERY",
     "RPFINCACU02_Q0001QueryResults"
@@ -55,13 +53,14 @@ SAP_MAIN_QUERY = env_or_default(
 MAIN_FILTER_FIELD = env_or_default("MAIN_FILTER_FIELD", "PARA_PROJECT")
 MAIN_SETOFBKS = env_or_default("MAIN_SETOFBKS", "6000")
 
-# Accounting Period/Year range
+# Disabled by default because this caused:
+# "Expression cannot be converted into ABAP select options"
 ACCYEARPER_FROM = env_or_default("ACCYEARPER_FROM", "2020001")
 ACCYEARPER_TO = env_or_default("ACCYEARPER_TO", "2026012")
 
 USE_ACCYEARPER_RANGE = env_or_default(
     "USE_ACCYEARPER_RANGE",
-    "1"
+    "0"
 ).lower() not in ("0", "false", "no", "")
 
 OUTPUT_CSV = env_or_default("OUTPUT_CSV", "data/subcontractor-cost.csv")
@@ -249,8 +248,7 @@ def run_etl() -> pd.DataFrame:
     if not all_records:
         raise RuntimeError(
             "Main query returned 0 total rows. "
-            "This means the SAP filters are excluding everything. "
-            "Check SAP_MAIN_QUERY, MAIN_FILTER_FIELD, MAIN_SETOFBKS, and ACCYEARPER settings."
+            "Check SAP_MAIN_QUERY, MAIN_FILTER_FIELD, and MAIN_SETOFBKS."
         )
 
     df = pd.DataFrame.from_records(all_records)
